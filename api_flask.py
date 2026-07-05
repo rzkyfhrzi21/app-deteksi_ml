@@ -1,3 +1,23 @@
+# ============================================================
+# FILE: api_flask.py
+# TUJUAN: Server API utama untuk menerima gambar daun padi
+#         dari aplikasi PHP, memprosesnya dengan model AI,
+#         dan mengembalikan hasil prediksi dalam format JSON.
+#
+# Ibarat "dokter otomatis" — foto daun padi dikirim ke sini,
+# lalu model CNN memeriksa dan memberikan diagnosis penyakitnya.
+#
+# ENDPOINT:
+#   GET  /health  → Cek apakah server hidup
+#   POST /predict → Kirim gambar, terima hasil prediksi JSON
+#
+# ALUR KERJA:
+# (1) Server dinyalakan → model TFLite dimuat ke memori
+# (2) Aplikasi PHP mengirim gambar via POST ke /predict
+# (3) Gambar dipreproses (resize, normalize)
+# (4) Model memprediksi jenis penyakit
+# (5) Hasil dikembalikan sebagai JSON
+# ============================================================
 import os
 
 # =====================================
@@ -5,15 +25,19 @@ import os
 # =====================================
 # MODE = "local"   → untuk testing localhost
 # MODE = "online"  → untuk server (gunicorn)
+# Nilai diambil dari environment variable FLASK_MODE.
+# Jika tidak diset, default ke "online" (aman untuk production).
 MODE = os.getenv("FLASK_MODE", "online")
 
 # =====================================
 # KONFIGURASI ENV TENSORFLOW
 # =====================================
-# Sembunyikan warning TensorFlow (INFO, WARNING)
+# Sembunyikan warning TensorFlow (INFO, WARNING) agar log server tidak penuh
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-# Paksa TensorFlow CPU-only (hemat RAM, WAJIB di server kecil)
+# Paksa TensorFlow hanya pakai CPU (bukan GPU)
+# Wajib di server kecil seperti Render.com free karena tidak ada GPU
+# Ini juga menghemat RAM secara signifikan
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 from flask import Flask, request, jsonify
@@ -25,49 +49,60 @@ import cv2
 # KONFIGURASI DASAR
 # ==========================
 
-# Path folder saat ini
+# Path folder tempat file api_flask.py ini berada (root repo)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Model Keras (fallback / local)
+# Path ke model Keras H5 — dipakai sebagai FALLBACK jika TFLite tidak ada
+# Ukuran ~118 MB, butuh RAM lebih besar
 MODEL_PATH = os.path.join(BASE_DIR, "model.h5")
 
-# Model TensorFlow Lite (hasil convert + quantization)
+# Path ke model TFLite FP16 — UTAMA yang dipakai di server production
+# Ukuran ~29 MB, hasil konversi dari best_model.h5, akurasi hampir sama
 TFLITE_MODEL_PATH = os.path.join(BASE_DIR, "model_fp16.tflite")
 
-# Ukuran input gambar (HARUS sama dengan training)
+# Ukuran input gambar — HARUS sama persis dengan saat training model
+# Semua gambar akan di-resize ke 128x128 piksel sebelum dimasukkan ke model
 IMG_SIZE = (128, 128)
 
-# Nama kelas (URUTAN HARUS SAMA SAAT TRAINING)
+# Nama kelas output model — URUTAN HARUS SAMA PERSIS SEPERTI class_indices saat training
+# Urutan ini dikunci via parameter classes= di flow_from_directory() di train_colab.py
+# Jangan diubah urutan ini! Index 0 = Healthy, bukan yang lain.
 CLASS_NAMES = [
-    "Bacterialblight",
-    "Blast",
-    "Brownspot",
-    "Tungro"
+    "Healthy",          # index 0 → Daun sehat, tidak ada penyakit
+    "Bacterialblight",  # index 1 → Penyakit hawar bakteri
+    "Blast",            # index 2 → Penyakit blas / busuk leher
+    "Brownspot",        # index 3 → Penyakit bercak cokelat
+    "Tungro",           # index 4 → Penyakit tungro (virus)
 ]
 
 # ==========================
-# DETEKSI MODE MODEL
+# DETEKSI MODE MODEL (OTOMATIS)
 # ==========================
-# Jika file .tflite ada → pakai TFLite (lebih ringan & hemat RAM)
-# Jika tidak ada → fallback ke model.h5 (keras)
+# Sistem cek dulu: apakah file model_fp16.tflite ada di folder ini?
+# Jika ADA  → pakai TFLite (lebih ringan, hemat RAM ~4x, kecepatan hampir sama)
+# Jika TIDAK → fallback otomatis ke model.h5 (Keras, ukuran besar tapi lebih portabel)
 USE_TFLITE = os.path.exists(TFLITE_MODEL_PATH)
 
 # ==========================
-# LOAD MODEL (SEKALI SAJA)
+# LOAD MODEL (SEKALI SAJA SAAT SERVER DINYALAKAN)
 # ==========================
+# Model hanya dimuat SEKALI saat server pertama kali hidup, bukan setiap request.
+# Ini penting untuk efisiensi — bayangkan jika harus load model 29MB setiap ada request!
 
 if USE_TFLITE:
     print(f"[INFO] Loading TFLite model from: {TFLITE_MODEL_PATH}")
 
-    # Inisialisasi interpreter TFLite
+    # Inisialisasi interpreter TFLite — ibarat 'menyiapkan mesin prediksi'
     interpreter = tf.lite.Interpreter(model_path=TFLITE_MODEL_PATH)
-    interpreter.allocate_tensors()
+    interpreter.allocate_tensors()  # Alokasikan memori untuk tensor input & output
 
     # Ambil detail input & output tensor
-    input_details = interpreter.get_input_details()
+    # input_details  → informasi tentang format gambar yang diharapkan model
+    # output_details → informasi tentang format hasil prediksi yang dikeluarkan model
+    input_details  = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Keras model tidak dipakai
+    # Keras model tidak dipakai saat TFLite aktif
     model = None
 
     print("[INFO] TFLite model loaded successfully.")
@@ -75,59 +110,88 @@ if USE_TFLITE:
 else:
     print(f"[INFO] Loading Keras model from: {MODEL_PATH}")
 
-    # Load model Keras (.h5)
+    # Load model Keras (.h5) — lebih besar tapi langsung bisa dipakai
     model = tf.keras.models.load_model(MODEL_PATH)
 
-    # Interpreter tidak dipakai
+    # Interpreter TFLite tidak dipakai saat mode Keras aktif
     interpreter = None
 
     print("[INFO] Keras model loaded successfully.")
 
 # ==========================
-# PREPROCESS IMAGE
+# FUNGSI: PREPROCESS IMAGE
 # ==========================
 def preprocess_image(image_bytes):
     """
-    Preprocessing gambar:
-    - Decode bytes → OpenCV image
-    - Resize ke IMG_SIZE
-    - Normalisasi ke range [0,1]
-    - Tambah dimensi batch
-    """
-    file_bytes = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    Mempersiapkan gambar agar siap dimasukkan ke model AI.
 
+    Ibarat 'memasak bahan makanan' sebelum dimasak — gambar mentah dari
+    pengguna perlu disiapkan dulu agar formatnya cocok dengan yang diharapkan model.
+
+    ALUR KERJA (harus IDENTIK dengan preprocessing saat training):
+    (1) Ubah data bytes → gambar OpenCV (format BGR)
+    (2) Validasi: pastikan gambar berhasil dibaca
+    (3) [KRITIKAL] Konversi warna BGR → RGB
+        (OpenCV membaca BGR, tapi model dilatih dengan gambar RGB!
+         Tanpa konversi ini, warna gambar terbalik dan prediksi AKAN SALAH)
+    (4) Resize gambar ke ukuran 128x128 piksel (sesuai input model)
+    (5) Normalisasi nilai piksel: dari range 0-255 → 0.0-1.0
+        (Model bekerja lebih baik dengan angka kecil antara 0 dan 1)
+    (6) Tambah dimensi batch: dari (128,128,3) → (1,128,128,3)
+        (Model mengharapkan input berupa 'kumpulan gambar', bukan 1 gambar saja)
+    """
+    # (1) Ubah bytes mentah → array numpy → gambar OpenCV (format BGR)
+    file_bytes = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)  # OpenCV membaca dalam format BGR
+
+    # (2) Validasi: jika gambar tidak terbaca (format tidak didukung atau file rusak)
     if img is None:
         raise ValueError("Gambar tidak valid (JPG/PNG saja).")
 
-    img = cv2.resize(img, IMG_SIZE)
-    img = img.astype("float32") / 255.0
-    img = np.expand_dims(img, axis=0)
+    # (3) [KRITIKAL] Konversi BGR → RGB agar sama dengan training
+    # Keras ImageDataGenerator.flow_from_directory() membaca gambar sebagai RGB
+    # OpenCV membaca sebagai BGR → tanpa konversi ini, prediksi akan salah!
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    img = cv2.resize(img, IMG_SIZE)             # (4) Resize ke 128x128 piksel
+    img = img.astype("float32") / 255.0         # (5) Normalisasi: 0-255 → 0.0-1.0
+    img = np.expand_dims(img, axis=0)           # (6) Tambah dimensi batch: (128,128,3) → (1,128,128,3)
 
     return img
 
 # ==========================
-# FUNGSI PREDICT UNIVERSAL
+# FUNGSI: PREDICT MODEL (UNIVERSAL)
 # ==========================
 def predict_model(img):
     """
-    Fungsi prediksi universal:
-    - Jika TFLite → pakai interpreter
-    - Jika Keras → pakai model.predict
+    Fungsi prediksi yang bekerja untuk DUA jenis model (TFLite atau Keras).
+
+    Ibarat 'mesin pendeteksi' yang bisa bekerja dengan dua jenis bahan bakar —
+    secara otomatis memilih cara yang tepat berdasarkan model yang tersedia.
+
+    Hasilnya: array 5 angka (probabilitas), contoh:
+    [0.02, 0.93, 0.02, 0.02, 0.01]
+    → Index 1 (Bacterialblight) paling tinggi = model mendeteksi hawar bakteri
     """
     if USE_TFLITE:
+        # === CARA PREDIKSI DENGAN TFLITE INTERPRETER ===
+        # (1) Masukkan gambar ke slot input tensor model
         interpreter.set_tensor(
-            input_details[0]["index"],
-            img.astype(np.float32)
+            input_details[0]["index"],  # Index slot input yang benar
+            img.astype(np.float32)      # Pastikan tipe data float32 sesuai kebutuhan model
         )
+        # (2) Jalankan proses prediksi (model 'berpikir')
         interpreter.invoke()
 
+        # (3) Ambil hasil prediksi dari slot output tensor
         output = interpreter.get_tensor(
-            output_details[0]["index"]
+            output_details[0]["index"]  # Index slot output yang benar
         )
-        return output[0]
+        return output[0]  # Ambil baris pertama (karena batch size = 1)
 
     else:
+        # === CARA PREDIKSI DENGAN MODEL KERAS ===
+        # Lebih sederhana — cukup panggil .predict() dan ambil baris pertama
         return model.predict(img)[0]
 
 # ==========================
@@ -139,15 +203,26 @@ app = Flask(__name__)
 @app.route("/health", methods=["GET"])
 def health():
     """
-    Endpoint health-check
+    ENDPOINT: GET /health — Cek Status Server
+
+    Ibarat 'tombol intercom' untuk memastikan server masih hidup.
     Digunakan untuk:
-    - Test server hidup
-    - Monitoring deployment
+    - Memastikan server sudah berjalan setelah deploy
+    - Monitoring otomatis oleh Render.com
+    - Testing koneksi dari aplikasi PHP sebelum kirim gambar
+
+    Contoh response:
+    {
+        "status": "ok",
+        "mode": "online",
+        "model": "tflite",
+        "message": "API is running"
+    }
     """
     return jsonify({
         "status": "ok",
-        "mode": MODE,
-        "model": "tflite" if USE_TFLITE else "keras",
+        "mode": MODE,                                    # "local" atau "online"
+        "model": "tflite" if USE_TFLITE else "keras",   # Jenis model yang sedang aktif
         "message": "API is running"
     }), 200
 
@@ -155,39 +230,66 @@ def health():
 @app.route("/predict", methods=["POST"])
 def predict():
     """
-    Endpoint utama prediksi penyakit daun padi
-    Input  : file gambar (field name: image)
-    Output : label, confidence, probabilities
+    ENDPOINT: POST /predict — Prediksi Penyakit Daun Padi
+
+    Ini adalah endpoint utama — 'jantung' dari seluruh sistem.
+    Menerima gambar dari aplikasi PHP, memprosesnya, dan mengembalikan hasil.
+
+    INPUT  : Form-data dengan field 'image' berisi file gambar (JPG/PNG)
+    OUTPUT : JSON berisi label penyakit, confidence, dan probabilitas semua kelas
+
+    ALUR KERJA:
+    (1) Validasi: pastikan field 'image' ada di request
+    (2) Validasi: pastikan nama file tidak kosong
+    (3) Preprocess gambar (resize, normalize, dsb.)
+    (4) Jalankan prediksi model AI
+    (5) Tentukan kelas dengan probabilitas tertinggi
+    (6) Kembalikan hasil sebagai JSON
+
+    Contoh response sukses:
+    {
+        "label": "Bacterialblight",
+        "confidence": 0.9345,
+        "probs": {
+            "Healthy": 0.0123,
+            "Bacterialblight": 0.9345,
+            ...
+        }
+    }
     """
+    # (1) Validasi: cek apakah field 'image' ada di request yang dikirim PHP
     if "image" not in request.files:
         return jsonify({"error": "Field 'image' tidak ditemukan."}), 400
 
     file = request.files["image"]
 
+    # (2) Validasi: cek apakah nama file tidak kosong (antisipasi upload tanpa file)
     if file.filename == "":
         return jsonify({"error": "Nama file kosong."}), 400
 
     try:
-        # Preprocess gambar
+        # (3) Preprocess gambar: resize, konversi warna, normalisasi
         img = preprocess_image(file.read())
 
-        # Prediksi (AUTO keras / tflite)
-        preds = predict_model(img)
+        # (4) Jalankan prediksi — otomatis pakai TFLite atau Keras
+        preds = predict_model(img)  # Hasilnya: array 5 angka probabilitas [0.02, 0.93, ...]
 
-        # Ambil kelas dengan probabilitas tertinggi
-        idx = int(np.argmax(preds))
-        confidence = float(preds[idx])
+        # (5) Cari index dengan nilai probabilitas tertinggi → itulah kelas yang diprediksi
+        idx        = int(np.argmax(preds))  # Contoh: index 1 = Bacterialblight
+        confidence = float(preds[idx])      # Ambil nilai probabilitasnya sebagai confidence
 
+        # (6) Kembalikan hasil sebagai JSON ke aplikasi PHP
         return jsonify({
-            "label": CLASS_NAMES[idx],
-            "confidence": confidence,
-            "probs": {
+            "label":      CLASS_NAMES[idx],  # Nama penyakit yang diprediksi (contoh: "Bacterialblight")
+            "confidence": confidence,         # Tingkat keyakinan 0.0-1.0 (contoh: 0.9345 = 93.45%)
+            "probs": {                        # Probabilitas lengkap semua 5 kelas
                 CLASS_NAMES[i]: float(p)
                 for i, p in enumerate(preds)
             }
         }), 200
 
     except Exception as e:
+        # Jika terjadi error apapun (gambar rusak, model error, dsb.) → kembalikan pesan error
         print("[ERROR]", str(e))
         return jsonify({"error": str(e)}), 500
 
@@ -197,20 +299,25 @@ def predict():
 # ==========================
 
 if __name__ == "__main__":
+    # Blok ini HANYA dijalankan jika file dieksekusi langsung (python api_flask.py)
+    # Jika dijalankan via Gunicorn (di server production), blok ini DILEWATI
+    # karena Gunicorn langsung memanggil objek 'app', bukan menjalankan file ini sebagai script
 
     # ===============================
-    # MODE LOCAL (UNCOMMENT JIKA TEST)
+    # MODE LOCAL (UNTUK TESTING DI KOMPUTER SENDIRI)
     # ===============================
     if MODE == "local":
         print("[INFO] Running in LOCAL mode")
         app.run(
-            host="127.0.0.1",
-            port=5000,
-            debug=True
+            host="127.0.0.1",  # Hanya bisa diakses dari komputer sendiri (localhost)
+            port=5000,         # Berjalan di port 5000 → http://127.0.0.1:5000
+            debug=True         # Mode debug: tampilkan error lengkap & auto-reload saat kode diubah
         )
 
     # ==================================
-    # MODE ONLINE (GUNICORN AKAN HANDLE)
+    # MODE ONLINE (GUNICORN YANG MENGATUR)
+    # Saat di server Render.com, start.sh menjalankan Gunicorn secara langsung
+    # Gunicorn mengimpor objek 'app' dari file ini, bukan menjalankan blok if __name__ ini
     # ==================================
     else:
         print("[INFO] Running in ONLINE mode via Gunicorn")
