@@ -1,31 +1,64 @@
 """
 =======================================================
-TRAINING MODEL DETEKSI PENYAKIT PADI - GOOGLE COLAB
-=======================================================
-Kelas: Bacterialblight, Blast, Brownspot, Healthy, Tungro
-Input: 128x128 RGB | Output: 5 kelas softmax
+FILE: train_colab.py
+TUJUAN: Melatih model CNN untuk mendeteksi 5 jenis kondisi daun padi
+        menggunakan Google Colab (komputasi gratis dari Google).
+
+Ibarat 'melatih seorang dokter muda' dari awal:
+  - Dokter diberi ribuan foto daun padi beserta diagnosisnya (dataset)
+  - Dokter belajar mengenali pola penyakit dari foto-foto tersebut (training)
+  - Setelah selesai, kemampuan dokter disimpan ke file H5 (model tersimpan)
+  - File H5 kemudian dikompres menjadi TFLite untuk dipakai di server
+
+KELAS YANG DIDETEKSI (5 kelas):
+  0. Healthy        → Daun sehat, tidak ada penyakit
+  1. Bacterialblight → Hawar Bakteri — bercak cokelat di ujung daun
+  2. Blast           → Blas / Busuk Leher — bercak belah ketupat
+  3. Brownspot       → Bercak Cokelat — titik-titik cokelat bulat
+  4. Tungro          → Tungro (virus) — daun menguning dan menggulung
+
+SPESIFIKASI MODEL:
+  Input  : gambar 128 x 128 piksel, 3 saluran warna (RGB)
+  Output : 5 angka probabilitas (softmax), total = 1.0
+  Contoh output: [0.02, 0.93, 0.02, 0.02, 0.01]
+  → Index 1 (Bacterialblight) paling tinggi = penyakit hawar bakteri
 
 CARA PAKAI:
-  Jalankan sel satu per satu dari atas ke bawah.
-  Setiap "# ===== SEL X =====" adalah 1 cell baru di Colab.
+  Buka Google Colab → upload file ini atau copy-paste per sel.
+  Jalankan sel satu per satu dari atas ke bawah (jangan loncat-loncat).
+  Setiap blok '# ===== SEL X =====' = 1 cell baru di Colab.
 =======================================================
 """
 
 # ============================================================
 # SEL 1: SETUP KAGGLE & DOWNLOAD DATASET
 # ============================================================
+# Dataset diambil dari Kaggle (platform data science publik).
+# Kita membutuhkan 2 dataset berbeda yang kemudian digabungkan:
+#   Dataset 1: 4 kelas penyakit (Bacterialblight, Blast, Brownspot, Tungro)
+#   Dataset 2: 1 kelas sehat (Healthy) — dari dataset yang berbeda
+# ============================================================
 import os
 import shutil
 
+# ==============================
+# KREDENSIAL KAGGLE API
+# Dibutuhkan agar Colab bisa mengunduh dataset dari Kaggle secara otomatis.
+# Ganti dengan kredensial akun Kaggle Anda jika token di bawah sudah kedaluwarsa.
+# Cara mendapatkan API key: Kaggle → Account → Create New Token → kaggle.json
+# ==============================
 os.environ['KAGGLE_USERNAME'] = "lulukaulani08"
 os.environ['KAGGLE_KEY'] = "KGAT_43cee82e0c48baacc74ea2ebfdb30ba2"
 
 # ----------------------------------------------------------
-# STEP 1: Download 4 penyakit dari dataset utama
+# STEP 1: Download 4 kelas penyakit dari dataset utama
+# Sumber  : https://www.kaggle.com/datasets/nirmalsankalana/rice-leaf-disease-image
+# Berisi  : Bacterialblight, Blast, Brownspot, Tungro
 # ----------------------------------------------------------
 os.system("kaggle datasets download -d nirmalsankalana/rice-leaf-disease-image")
 os.system("unzip -q rice-leaf-disease-image.zip -d dataset_sementara")
 
+# Pindahkan semua isi dataset ke folder dataset_padi/ lalu hapus sisa file
 os.makedirs("dataset_padi", exist_ok=True)
 os.system("mv dataset_sementara/* dataset_padi/")
 os.system("rm -rf dataset_sementara rice-leaf-disease-image.zip")
@@ -65,7 +98,8 @@ else:
 os.system("rm -rf dataset_healthy_src rice-leafs-disease-dataset.zip")
 
 # ----------------------------------------------------------
-# STEP 3: Verifikasi hasil akhir
+# STEP 3: Verifikasi hasil akhir — pastikan semua kelas lengkap
+# Sistem akan menghitung jumlah gambar per kelas dan menampilkannya
 # ----------------------------------------------------------
 print("\n===== Dataset siap di-training =====")
 total_all = 0
@@ -81,7 +115,14 @@ print(f"  {'TOTAL':20s}: {total_all:>5} gambar")
 
 # ============================================================
 # SEL 2: SPLIT DATASET 70% TRAIN / 10% VAL / 20% TEST
-# (Split fisik per folder, stratified per kelas)
+# ============================================================
+# Ibarat memisahkan soal ujian menjadi tiga kelompok:
+#   - 70% TRAIN  → soal yang dikerjakan saat belajar (model melihat ini)
+#   - 10% VAL    → soal latihan untuk cek apakah sudah belajar dengan benar
+#   - 20% TEST   → soal ujian akhir untuk menilai kemampuan sesungguhnya
+#
+# Penting: setiap kelas dipisahkan secara merata (stratified split)
+# agar model tidak belajar lebih banyak dari satu jenis penyakit saja.
 # ============================================================
 import os
 import numpy as np
@@ -89,16 +130,17 @@ import shutil
 import random
 from sklearn.model_selection import train_test_split
 
-RANDOM_SEED = 42
-DATASET_SRC = "dataset_padi"
+RANDOM_SEED = 42  # Angka acak tetap agar split selalu sama jika diulang
+DATASET_SRC = "dataset_padi"  # Folder sumber dataset yang sudah lengkap 5 kelas
 
+# Nama folder output untuk masing-masing subset
 SPLIT_DIRS = {
-    'train': 'dataset_train',   # 70%
-    'val':   'dataset_val',     # 10%
-    'test':  'dataset_test',    # 20%
+    'train': 'dataset_train',   # 70% dari total
+    'val':   'dataset_val',     # 10% dari total
+    'test':  'dataset_test',    # 20% dari total
 }
 
-# Bersihkan folder split lama jika ada
+# Bersihkan folder split lama jika ada (untuk memastikan tidak ada data sisa)
 for d in SPLIT_DIRS.values():
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
@@ -112,21 +154,23 @@ for kelas in sorted(os.listdir(DATASET_SRC)):
     if not os.path.isdir(src_kelas):
         continue
 
-    # Kumpulkan semua file gambar
+    # Kumpulkan semua file gambar dalam kelas ini
     files = [f for f in os.listdir(src_kelas)
              if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     random.seed(RANDOM_SEED)
 
-    # Split 1: pisahkan test 20% dulu
+    # Split dalam 2 tahap:
+    # Tahap 1: pisahkan test (20%) dari semua data
     train_val_files, test_files = train_test_split(
         files, test_size=0.20, random_state=RANDOM_SEED
     )
-    # Split 2: dari sisa 80%, ambil val 12.5% → hasilnya 10% dari total
+    # Tahap 2: dari sisa 80%, pisahkan val (12.5% dari 80% = 10% dari total)
     train_files, val_files = train_test_split(
         train_val_files, test_size=0.125, random_state=RANDOM_SEED
     )
 
-    # Salin file ke folder masing-masing
+    # Salin (bukan memindahkan) file ke folder masing-masing
+    # Agar dataset asli di dataset_padi/ tidak rusak
     for subset, file_list in [('train', train_files),
                                ('val',   val_files),
                                ('test',  test_files)]:
@@ -142,7 +186,17 @@ print("[OK] Split selesai!\n")
 
 
 # ============================================================
-# SEL 3: TRAINING MODEL
+# SEL 3: TRAINING MODEL CNN (Convolutional Neural Network)
+# ============================================================
+# Ini adalah inti dari proses machine learning.
+# Model akan 'belajar' mengenali pola visual penyakit daun padi
+# dengan melihat ribuan foto berlabel dari folder dataset_train/.
+#
+# CNN bekerja seperti mata manusia yang terlatih:
+#   Layer Conv2D   → mendeteksi garis, warna, tekstur pada gambar
+#   MaxPooling2D   → merangkum informasi penting, buang detail tidak perlu
+#   Flatten+Dense  → mengambil keputusan akhir berdasarkan pola yang ditemukan
+#   Softmax        → mengubah keputusan menjadi probabilitas 0-1 untuk 5 kelas
 # ============================================================
 import os
 import numpy as np
@@ -155,13 +209,17 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLRO
 from tensorflow.keras.optimizers import Adam
 
 # ==============================
-# KONFIGURASI
+# KONFIGURASI HYPERPARAMETER
 # ==============================
-IMG_SIZE   = (128, 128)
-BATCH_SIZE = 15      # sesuai skripsi: step/epoch = 4478/15 ≈ 299
-EPOCHS     = 100
+IMG_SIZE   = (128, 128)  # Ukuran input gambar — HARUS sama dengan api_flask.py!
+BATCH_SIZE = 15           # Jumlah foto yang diproses sekaligus per langkah
+                          # (sesuai skripsi: step/epoch = 4478/15 ≈ 299)
+EPOCHS     = 100          # Maksimum iterasi belajar (bisa berhenti lebih awal via EarlyStopping)
 
-# Path folder hasil split Sel 2
+# ==============================
+# FOLDER DATASET
+# ==============================
+# Path folder hasil split dari Sel 2
 SPLIT_DIRS = {
     'train': 'dataset_train',
     'val':   'dataset_val',
@@ -169,23 +227,41 @@ SPLIT_DIRS = {
 }
 
 # ==============================
-# URUTAN KELAS (CUSTOM)
-# Healthy di index 0, sisanya urut abjad.
-# HARUS SAMA PERSIS dengan CLASS_NAMES di api_flask.py!
+# URUTAN KELAS (WAJIB SAMA DENGAN api_flask.py!)
+# Keras secara default mengurutkan nama kelas secara alfabetis.
+# Kita paksa urutan custom agar Healthy tetap di index 0.
+# PERINGATAN: Jangan ubah urutan ini! Harus persis sama
+# dengan variabel CLASS_NAMES di api_flask.py!
 # ==============================
 CLASS_NAMES = [
-    "Healthy",          # index 0
-    "Bacterialblight",  # index 1
-    "Blast",            # index 2
-    "Brownspot",        # index 3
-    "Tungro",           # index 4
+    "Healthy",          # index 0 — Daun sehat
+    "Bacterialblight",  # index 1 — Hawar bakteri
+    "Blast",            # index 2 — Blas/busuk leher
+    "Brownspot",        # index 3 — Bercak cokelat
+    "Tungro",           # index 4 — Tungro (virus)
 ]
-NUM_CLASSES = len(CLASS_NAMES)
+NUM_CLASSES = len(CLASS_NAMES)  # = 5
 
 # ==============================
-# GENERATOR — masing-masing dari folder terpisah
+# DATA GENERATOR (AUGMENTASI)
 # ==============================
-# Training: dengan augmentasi
+# Data Generator adalah 'mesin persiapan foto' sebelum dimasukkan ke model.
+# Untuk data training: selain menyiapkan foto, generator juga memvariasikan
+# foto agar model lebih tahan terhadap berbagai kondisi pengambilan gambar.
+# Untuk data validasi & testing: hanya normalisasi, tanpa variasi.
+#
+# AUGMENTASI yang diterapkan saat training:
+#   rotation_range=25       → putar foto hingga 25 derajat (kiri/kanan)
+#   width_shift_range=0.2   → geser horizontal hingga 20% lebar foto
+#   height_shift_range=0.2  → geser vertikal hingga 20% tinggi foto
+#   zoom_range=0.2          → perbesar/perkecil gambar hingga 20%
+#   horizontal_flip=True    → cerminkan foto secara horizontal
+#   brightness_range=[0.8, 1.2] → variasikan kecerahan (80%-120%)
+#
+# rescale=1./255 pada semua generator:
+#   Mengubah nilai piksel dari rentang 0-255 menjadi 0.0-1.0
+#   (HARUS IDENTIK dengan normalisasi di api_flask.py!)
+# ==============================
 datagen_train = ImageDataGenerator(
     rescale=1./255,
     rotation_range=25,
@@ -195,7 +271,8 @@ datagen_train = ImageDataGenerator(
     horizontal_flip=True,
     brightness_range=[0.8, 1.2],
 )
-# Validasi & Test: hanya rescale, tanpa augmentasi
+# Validasi & Test: HANYA rescale, tanpa augmentasi
+# (penting! model harus dievaluasi dengan foto 'asli', bukan yang sudah divariasikan)
 datagen_eval = ImageDataGenerator(rescale=1./255)
 
 print("[INFO] Memuat Data Training (70%)...")
@@ -241,70 +318,85 @@ print(f"  Testing  : {test_generator.samples} gambar")
 # ==============================
 # ARSITEKTUR MODEL CNN
 # ==============================
+# Model ini tersusun dari 4 blok konvolusi (Conv2D) + 1 kepala klasifikasi.
+# Setiap blok secara bertahap mengekstrak fitur yang semakin abstrak:
+#   Block 1 (32 filter)  → mendeteksi tepi, warna, tekstur dasar
+#   Block 2 (64 filter)  → mendeteksi pola lebih kompleks (bercak, garis)
+#   Block 3 (128 filter) → mendeteksi bentuk lokal penyakit
+#   Block 4 (256 filter) → mendeteksi pola global (distribusi penyakit di daun)
+#
+# BatchNormalization → menstabilkan proses belajar agar lebih cepat konvergen
+# Dropout           → mencegah overfitting (model terlalu hafal, bukan belajar)
+# Softmax (output)  → mengubah nilai akhir menjadi 5 probabilitas yang total = 1.0
+# ==============================
 model = Sequential([
-    Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 3)),  # RGB input
+    Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 3)),  # Input: gambar 128x128 RGB (3 saluran warna)
 
-    # Block 1
+    # Block 1 — filter kecil (32), tangkap fitur dasar
     Conv2D(32, (3,3), activation='relu', padding='same'),
     BatchNormalization(),
     MaxPooling2D(2, 2),
 
-    # Block 2
+    # Block 2 — filter lebih banyak (64), deteksi pola lebih rumit
     Conv2D(64, (3,3), activation='relu', padding='same'),
     BatchNormalization(),
     MaxPooling2D(2, 2),
-    Dropout(0.3),
+    Dropout(0.3),  # Matikan 30% neuron secara acak agar tidak terlalu bergantung pada satu pola
 
-    # Block 3
+    # Block 3 — filter 128, fitur semakin spesifik
     Conv2D(128, (3,3), activation='relu', padding='same'),
     BatchNormalization(),
     MaxPooling2D(2, 2),
-    Dropout(0.4),
+    Dropout(0.4),  # Dropout lebih tinggi karena fitur semakin kompleks
 
-    # Block 4
+    # Block 4 — filter 256, fitur paling abstrak dan high-level
     Conv2D(256, (3,3), activation='relu', padding='same'),
     BatchNormalization(),
     MaxPooling2D(2, 2),
     Dropout(0.4),
 
-    # Classifier Head
-    Flatten(),
-    Dense(512, activation='relu'),
+    # Kepala Klasifikasi — ubah peta fitur 2D menjadi keputusan final
+    Flatten(),         # Ratakan peta fitur 3D menjadi 1D
+    Dense(512, activation='relu'),  # Layer tersembunyi besar (512 neuron)
     BatchNormalization(),
-    Dropout(0.5),
-    Dense(NUM_CLASSES, activation='softmax')
+    Dropout(0.5),      # Dropout 50% — regularisasi kuat sebelum output
+    Dense(NUM_CLASSES, activation='softmax')  # Output: 5 probabilitas (total=1.0)
 ])
 
 model.compile(
-    optimizer=Adam(learning_rate=0.001),
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
+    optimizer=Adam(learning_rate=0.001),  # Adam: optimizer adaptif yang umum dipakai
+    loss='categorical_crossentropy',       # Loss untuk klasifikasi multi-kelas
+    metrics=['accuracy']                   # Metrik yang ditampilkan saat training
 )
 
-model.summary()
+model.summary()  # Tampilkan ringkasan arsitektur model
 
 # ==============================
-# CALLBACKS
+# CALLBACKS (PENGATUR OTOMATIS SAAT TRAINING)
 # ==============================
+# Callback ibarat 'asisten yang mengawasi proses belajar' dan
+# mengambil tindakan tertentu berdasarkan kondisi yang terjadi.
+# ==============================
+
 early_stop = EarlyStopping(
-    monitor='val_loss',
-    patience=15,
-    restore_best_weights=True,
+    monitor='val_loss',       # Pantau nilai loss di data validasi
+    patience=15,              # Berhenti jika val_loss tidak membaik selama 15 epoch berturut-turut
+    restore_best_weights=True, # Kembalikan bobot terbaik saat berhenti (bukan bobot terakhir)
     verbose=1
 )
 
 checkpoint = ModelCheckpoint(
-    "best_model.h5",
-    monitor='val_accuracy',
-    save_best_only=True,
+    "model/best_model.h5",      # Simpan model terbaik ke folder model/
+    monitor='val_accuracy',     # Pantau akurasi validasi
+    save_best_only=True,        # Hanya simpan jika ini adalah akurasi terbaik sejauh ini
     verbose=1
 )
 
 reduce_lr = ReduceLROnPlateau(
-    monitor='val_loss',
-    factor=0.5,
-    patience=5,
-    min_lr=1e-6,
+    monitor='val_loss',    # Pantau nilai loss di data validasi
+    factor=0.5,            # Kurangi learning rate menjadi 50% saat stuck
+    patience=5,            # Tunggu 5 epoch sebelum mengurangi learning rate
+    min_lr=1e-6,           # Batas minimum learning rate (jangan terlalu kecil)
     verbose=1
 )
 
@@ -312,6 +404,11 @@ reduce_lr = ReduceLROnPlateau(
 # MULAI TRAINING
 # ==============================
 print("[INFO] Memulai Training...")
+print(f"  Total epoch   : {EPOCHS}")
+print(f"  Batch size    : {BATCH_SIZE}")
+print(f"  Ukuran gambar : {IMG_SIZE}")
+print("  EarlyStopping akan otomatis berhenti jika val_loss tidak membaik 15 epoch")
+print("  ModelCheckpoint otomatis menyimpan model terbaik ke model/best_model.h5")
 history = model.fit(
     train_generator,
     validation_data=val_generator,
@@ -319,14 +416,26 @@ history = model.fit(
     callbacks=[early_stop, checkpoint, reduce_lr]
 )
 
-model.save("model_final.h5")
+# Simpan model epoch terakhir sebagai backup (mungkin berbeda dari best_model)
+model.save("model/model_final.h5")
 print("[INFO] Training Selesai!")
-print("  → best_model.h5  : model terbaik berdasarkan val_accuracy (GUNAKAN INI)")
-print("  → model_final.h5 : model di epoch terakhir (backup)")
+print("  → model/best_model.h5   : model TERBAIK berdasarkan val_accuracy (GUNAKAN INI untuk konversi TFLite)")
+print("  → model/model_final.h5  : model di epoch terakhir (backup saja)")
 
 
 # ============================================================
-# SEL 4: EVALUASI & PLOT GRAFIK + UJI DATA TESTING
+# SEL 4: EVALUASI & VISUALISASI GRAFIK + UJI DATA TESTING
+# ============================================================
+# Setelah training selesai, kita perlu mengevaluasi seberapa baik
+# model belajar menggunakan DATA TESTING (20% yang belum pernah dilihat model).
+#
+# Visualisasi yang dihasilkan:
+# 1. Grafik Akurasi per Epoch (training_history.png)
+#    → Menunjukkan apakah model belajar dengan benar (naik terus) atau overfitting
+# 2. Confusion Matrix (confusion_matrix.png)
+#    → Menunjukkan di mana model sering salah (kolom/baris yang besar = sering keliru)
+# 3. Classification Report (di console)
+#    → Precision, Recall, F1-Score per kelas
 # ============================================================
 import numpy as np
 import tensorflow as tf
@@ -334,7 +443,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
 
-# ----- Plot Grafik Training -----
+# ----- PLOT GRAFIK TRAINING -----
 acc      = history.history['accuracy']
 val_acc  = history.history['val_accuracy']
 loss     = history.history['loss']
@@ -342,14 +451,16 @@ val_loss = history.history['val_loss']
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-axes[0].plot(acc,     label='Train Accuracy')
-axes[0].plot(val_acc, label='Val Accuracy')
+# Grafik kiri: Akurasi
+axes[0].plot(acc,     label='Train Accuracy')  # Akurasi di data training
+axes[0].plot(val_acc, label='Val Accuracy')    # Akurasi di data validasi
 axes[0].set_title('Accuracy per Epoch')
 axes[0].set_xlabel('Epoch')
 axes[0].set_ylabel('Accuracy')
 axes[0].legend()
 axes[0].grid(True)
 
+# Grafik kanan: Loss (semakin kecil semakin bagus)
 axes[1].plot(loss,     label='Train Loss')
 axes[1].plot(val_loss, label='Val Loss')
 axes[1].set_title('Loss per Epoch')
@@ -359,24 +470,27 @@ axes[1].legend()
 axes[1].grid(True)
 
 plt.tight_layout()
-plt.savefig("training_history.png", dpi=150)
+plt.savefig("training_history.png", dpi=150)  # Simpan grafik sebagai file gambar
 plt.show()
-print("[INFO] Grafik disimpan sebagai training_history.png")
+print("[INFO] Grafik training disimpan sebagai training_history.png")
 
-# ----- Evaluasi pada Data Testing (20%) -----
+# ----- EVALUASI PADA DATA TESTING (yang belum pernah dilihat model) -----
 print("\n===== EVALUASI MODEL TERBAIK PADA DATA TESTING (20%) =====")
-best_model = tf.keras.models.load_model("best_model.h5")
+best_model = tf.keras.models.load_model("model/best_model.h5")  # Muat model terbaik dari folder model/
 
 test_loss, test_acc = best_model.evaluate(test_generator, verbose=1)
 print(f"  Test Loss     : {test_loss:.4f}")
 print(f"  Test Accuracy : {test_acc*100:.2f}%")
 
-# ----- Classification Report (Precision / Recall / F1) -----
+# ----- CLASSIFICATION REPORT (Precision / Recall / F1) -----
+# Precision  → dari semua prediksi 'Blast', berapa % yang benar-benar Blast?
+# Recall     → dari semua foto Blast yang ada, berapa % yang berhasil dideteksi?
+# F1-Score   → rata-rata harmonis antara Precision dan Recall
 print("\n[INFO] Menghitung Precision, Recall, F1-Score per kelas...")
 test_generator.reset()
 y_pred_probs = best_model.predict(test_generator, verbose=1)
-y_pred = np.argmax(y_pred_probs, axis=1)
-y_true = test_generator.classes
+y_pred = np.argmax(y_pred_probs, axis=1)  # Pilih index dengan probabilitas tertinggi
+y_true = test_generator.classes            # Label asli dari dataset testing
 
 print("\n" + classification_report(
     y_true, y_pred,
@@ -384,14 +498,17 @@ print("\n" + classification_report(
     digits=4
 ))
 
-# ----- Confusion Matrix -----
+# ----- CONFUSION MATRIX -----
+# Matriks ini menunjukkan:
+#   - Diagonal utama (kiri-atas ke kanan-bawah) = prediksi BENAR
+#   - Di luar diagonal = prediksi SALAH (baris = asli, kolom = prediksi)
 cm = confusion_matrix(y_true, y_pred)
 plt.figure(figsize=(8, 6))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
             xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES)
-plt.title('Confusion Matrix — Data Testing')
-plt.ylabel('Label Asli')
-plt.xlabel('Label Prediksi')
+plt.title('Confusion Matrix \u2014 Data Testing')
+plt.ylabel('Label Asli')       # Baris = label yang sebenarnya
+plt.xlabel('Label Prediksi')   # Kolom = yang diprediksi model
 plt.tight_layout()
 plt.savefig("confusion_matrix.png", dpi=150)
 plt.show()
@@ -401,49 +518,78 @@ print("[INFO] Confusion matrix disimpan sebagai confusion_matrix.png")
 # ============================================================
 # SEL 5: KONVERSI KE TFLITE FP16 — UNTUK RENDER.COM
 # ============================================================
+# Setelah model selesai dilatih, kita perlu mengkonversinya ke format
+# yang lebih ringan agar bisa berjalan di server gratis Render.com.
+#
+# FP16 (Float 16-bit) = ukuran file dikurangi ~6x (dari ~100MB → ~17MB)
+# dengan cara mengkompres bilangan desimal dari 32-bit menjadi 16-bit.
+# Akurasi hampir tidak berubah karena perbedaan presisi sangat kecil.
+# ============================================================
 print("[INFO] Konversi best_model.h5 → model_fp16.tflite...")
 
-model_to_convert = tf.keras.models.load_model("best_model.h5")
+# Muat ulang model terbaik dari folder model/
+model_to_convert = tf.keras.models.load_model("model/best_model.h5")
 
+# Setup konverter
 converter = tf.lite.TFLiteConverter.from_keras_model(model_to_convert)
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-converter.target_spec.supported_types = [tf.float16]
+converter.optimizations = [tf.lite.Optimize.DEFAULT]          # Aktifkan optimasi otomatis
+converter.target_spec.supported_types = [tf.float16]           # Kompres ke presisi 16-bit
 
+# Jalankan konversi
 tflite_model = converter.convert()
 
-with open("model_fp16.tflite", "wb") as f:
+# Simpan ke folder model/ agar rapi bersama file H5
+with open("model/model_fp16.tflite", "wb") as f:
     f.write(tflite_model)
 
 size_mb = len(tflite_model) / (1024 * 1024)
 print(f"[OK] model_fp16.tflite selesai → {size_mb:.1f} MB")
-print("\n>>> Download file ini lalu upload ke GitHub repo app-deteksi_ml: <<<")
-print("    model_fp16.tflite")
+print("\n>>> Download file ini lalu upload ke GitHub repo app-deteksi_ml/model/: <<<")
+print("    model/model_fp16.tflite")
 print(f"\n>>> CLASS_NAMES untuk api_flask.py (sudah sesuai): <<<")
 print(f"    {CLASS_NAMES}")
 
 
 # ============================================================
-# SEL 6: VERIFIKASI — TEST PREDICT 1 GAMBAR
+# SEL 6: VERIFIKASI — TEST PREDIKSI 1 GAMBAR PER KELAS
+# ============================================================
+# Sebelum deploy, kita verifikasi bahwa model TFLite yang baru
+# dibuat memberikan prediksi yang masuk akal.
+# Script ini mengambil satu gambar dari setiap kelas di dataset_padi/
+# dan menjalankan prediksi persis seperti yang dilakukan api_flask.py.
+#
+# PENTING: Preprocessing di sini HARUS IDENTIK dengan api_flask.py!
+# (BGR→RGB, resize 128x128, normalisasi 0-1, expand_dims)
 # ============================================================
 import cv2
-import glob as glob_module   # alias agar tidak bentrok dengan variable lain
+import glob as glob_module   # Alias agar tidak bentrok dengan variabel lokal bernama 'glob'
 
 def test_predict_tflite(image_path, class_names):
     """
-    Test prediksi dengan TFLite — preprocessing SAMA PERSIS dengan api_flask.py.
-    BGR → RGB → resize → normalize → expand_dims
+    Menjalankan prediksi satu gambar menggunakan model TFLite.
+    Preprocessing HARUS IDENTIK dengan fungsi preprocess_image() di api_flask.py.
+
+    Alur:
+    (1) Baca gambar menggunakan OpenCV (format BGR)
+    (2) Konversi BGR → RGB (sama dengan training menggunakan ImageDataGenerator)
+    (3) Resize ke 128x128 piksel
+    (4) Normalisasi 0-255 → 0.0-1.0
+    (5) Tambah dimensi batch: (128,128,3) → (1,128,128,3)
+    (6) Masukkan ke model TFLite dan ambil hasil prediksi
+    (7) Tampilkan hasilnya beserta bar probabilitas
     """
-    interp = tf.lite.Interpreter(model_path="model_fp16.tflite")
+    # Muat model TFLite dari folder model/
+    interp = tf.lite.Interpreter(model_path="model/model_fp16.tflite")
     interp.allocate_tensors()
     in_det  = interp.get_input_details()
     out_det = interp.get_output_details()
 
-    # Preprocessing — harus identik dengan api_flask.py
-    img = cv2.imread(image_path)               # OpenCV: BGR
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) # → RGB (sama dengan training)
-    img = cv2.resize(img, (128, 128))
-    img = img.astype("float32") / 255.0
-    img = np.expand_dims(img, axis=0)
+    # (1)-(5) Preprocessing — harus identik dengan api_flask.py
+    img = cv2.imread(image_path)               # (1) Baca: OpenCV format BGR
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) # (2) Konversi → RGB
+    img = cv2.resize(img, (128, 128))          # (3) Resize
+    img = img.astype("float32") / 255.0        # (4) Normalisasi
+    img = np.expand_dims(img, axis=0)          # (5) Tambah dimensi batch
 
     interp.set_tensor(in_det[0]["index"], img)
     interp.invoke()

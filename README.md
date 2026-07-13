@@ -1,215 +1,219 @@
-# 🤖 API Deteksi Penyakit Padi — Model CNN + Flask
+# 🤖 app-deteksi_ml — Model AI & Server Flask Deteksi Penyakit Daun Padi
 
-Backend API berbasis **Python / Flask** yang menerima gambar daun padi dari aplikasi web, lalu menganalisisnya menggunakan **model kecerdasan buatan (CNN — Convolutional Neural Network)** untuk menentukan jenis penyakitnya.
-
-Repo ini adalah "otak" dari sistem deteksi. Repo aplikasi web PHP ada di: `app-deteksi`.
+Ini adalah folder **mesin kecerdasan buatan (AI)** dari sistem deteksi.
+Berisi model CNN yang sudah dilatih, server Flask sebagai jembatan API,
+dan semua script untuk melatih ulang maupun mengkonversi model.
 
 ---
 
-## 🗂️ Struktur & Penjelasan Setiap File
+## ✨ Fitur Utama: Deteksi Penyakit Daun Padi dengan CNN
+
+Model **Convolutional Neural Network (CNN)** di folder ini mampu menganalisis foto daun padi dan menentukan jenis penyakitnya secara otomatis — seperti seorang ahli pertanian yang memeriksa daun secara visual, namun dilakukan oleh komputer.
+
+### 🔬 Cara Kerja Model CNN
+
+```
+Foto daun padi (JPG/PNG)
+        ↓
+[1] Preprocess: BGR → RGB → resize 128×128 → normalisasi 0.0–1.0
+        ↓
+[2] Model CNN (4 blok konvolusi):
+    Block 1 (32 filter)  → deteksi tepi, warna, tekstur dasar
+    Block 2 (64 filter)  → deteksi pola bercak, garis
+    Block 3 (128 filter) → deteksi bentuk lokal penyakit
+    Block 4 (256 filter) → deteksi distribusi penyakit di daun
+        ↓
+[3] Dense + Softmax → 5 angka probabilitas (total = 1.0)
+    Contoh: [0.02, 0.93, 0.02, 0.02, 0.01]
+        ↓
+[4] Index angka tertinggi = kelas penyakit yang diprediksi
+    0.93 di index 1 → "Bacterialblight" (93% yakin)
+```
+
+### 🦠 Kelas Penyakit yang Dideteksi
+
+| Index | Nama Folder Dataset | Tampilan di Aplikasi | Keterangan |
+|-------|---------------------|----------------------|------------|
+| 0 | `Healthy` | Healthy (Daun Sehat) | Daun normal, tidak ada penyakit |
+| 1 | `Bacterialblight` | Bacterial Blight | Hawar bakteri — bercak cokelat di tepi/ujung daun |
+| 2 | `Blast` | Blast | Blas/busuk leher — bercak belah ketupat pada helai daun |
+| 3 | `Brownspot` | Brown Spot | Bercak cokelat — titik-titik bulat cokelat tersebar |
+| 4 | `Tungro` | Tungro | Virus tungro — daun menguning, menggulung, kerdil |
+
+### 📁 File Kunci Fitur Deteksi
+
+| File | Peran |
+|------|-------|
+| `api_flask.py` | **🔑 Server API utama** — menerima gambar dari PHP, preprocess, prediksi, kembalikan JSON |
+| `model/model_fp16.tflite` | **🧠 Model CNN** — file model terkompresi yang dijalankan saat prediksi |
+| `model/best_model.h5` | **💾 Backup model** — model Keras asli (lebih besar, untuk konversi ulang) |
+| `train_colab.py` | **🏋️ Script training** — melatih model CNN dari awal di Google Colab |
+| `convert_to_tflite.py` | **🔄 Konverter** — mengubah model H5 → TFLite agar lebih ringan |
+
+---
+
+## 📂 Struktur Folder Lengkap
 
 ```
 app-deteksi_ml/
-├── api_flask.py          → Server API utama. Menerima gambar, prediksi, kembalikan JSON
-├── train_colab.py        → Script training model CNN (dijalankan di Google Colab)
-├── convert_to_tflite.py  → Script konversi model H5 → TFLite (lebih ringan untuk server)
-├── start.sh              → Perintah menghidupkan server di Render.com (via Gunicorn)
-├── requirements.txt      → Daftar library Python yang dibutuhkan
-├── setup.py              → Konfigurasi paket/instalasi
-├── model.h5              → Model Keras asli hasil training (~118 MB) — untuk backup/fallback
-├── model_fp16.tflite     → Model TFLite FP16 (~29 MB) — DIPAKAI di server production
-└── dataset/              → Folder dataset gambar penyakit padi
+│
+├── api_flask.py               ← ⭐ SERVER API UTAMA (Flask)
+│                                 Endpoint GET /health dan POST /predict
+│                                 Dijalankan via Gunicorn di Render.com
+│
+├── model/                     ← 🧠 Folder semua file model AI
+│   ├── model_fp16.tflite      ← Model UTAMA — TFLite FP16, ~17 MB
+│   │                             Inilah yang dipakai saat prediksi di server
+│   ├── best_model.h5          ← Model Keras asli — ~100 MB (backup)
+│   │                             Digunakan untuk konversi ulang ke TFLite
+│   └── model_final.h5         ← Model Keras epoch terakhir — ~100 MB (backup)
+│                                 Simpan sebagai cadangan jika best_model.h5 perlu diuji
+│
+├── train_colab.py             ← 🏋️ SCRIPT TRAINING (Google Colab)
+│                                 6 sel berurutan: download dataset → split → train
+│                                 → evaluasi → konversi TFLite → verifikasi
+│
+├── convert_to_tflite.py       ← 🔄 SCRIPT KONVERSI H5 → TFLite
+│                                 Dua opsi: FP16 (~17MB) atau INT8 (~9MB)
+│                                 Jalankan di Colab setelah training selesai
+│
+├── start.sh                   ← Script Bash untuk menjalankan Gunicorn di Render.com
+│                                 Isi: gunicorn api_flask:app --workers 1 ...
+│
+├── requirements.txt           ← Daftar library Python yang dibutuhkan
+│                                 (flask, tensorflow, opencv-python, numpy, gunicorn)
+│
+├── dataset/                   ← Folder referensi dataset lokal
+│   ├── DATASET PENYAKIT PADI/ ← Dataset penyakit (Bacterialblight, Blast, Brownspot, Tungro)
+│   └── RiceLeafsDisease/      ← Dataset kelas Healthy
+│
+├── referensi/                 ← Materi & kode referensi untuk skripsi
+│   ├── *.ipynb                ← Notebook Jupyter percobaan/riset
+│   ├── train_local.py         ← Versi training untuk dijalankan di komputer lokal (bukan Colab)
+│   └── requirements.txt       ← Requirements khusus untuk training lokal
+│
+├── confusion_matrix.png       ← Gambar confusion matrix hasil evaluasi model
+├── training_history.png       ← Grafik akurasi & loss per epoch saat training
+│
+└── README.md                  ← File ini
 ```
 
 ---
 
-## 📄 Penjelasan Detail Setiap File
-
-### 🔷 `api_flask.py` — Server API Utama
-File paling penting di repo ini. Inilah server yang "mendengar" permintaan dari aplikasi PHP.
-
-**Cara kerja:**
-1. Server dinyalakan → model `model_fp16.tflite` dimuat ke memori
-2. Aplikasi PHP mengirim gambar daun padi via HTTP POST ke endpoint `/predict`
-3. Server menerima gambar → preprocessing (resize 128x128, normalize) → prediksi model
-4. Server mengembalikan hasil prediksi dalam format JSON
-
-**Endpoint yang tersedia:**
-
-| Method | Endpoint | Fungsi |
-|---|---|---|
-| `GET` | `/health` | Cek apakah server hidup. Kembalikan status & info model yang dipakai |
-| `POST` | `/predict` | Kirim gambar (field: `image`), terima hasil prediksi JSON |
-
-**Contoh response `/predict`:**
-```json
-{
-  "label": "Bacterialblight",
-  "confidence": 0.9345,
-  "probs": {
-    "Healthy": 0.0123,
-    "Bacterialblight": 0.9345,
-    "Blast": 0.0210,
-    "Brownspot": 0.0187,
-    "Tungro": 0.0135
-  }
-}
-```
-
----
-
-### 🔷 `train_colab.py` — Script Training Model CNN
-Dijalankan di **Google Colab** (bukan di komputer lokal) karena butuh GPU dan RAM besar.
-
-**Berisi 6 bagian (Cell/Sel):**
-
-| Sel | Isi |
-|---|---|
-| SEL 1 | Download dataset dari Kaggle (2 sumber berbeda) dan verifikasi |
-| SEL 2 | Split dataset: 70% training / 10% validasi / 20% testing |
-| SEL 3 | Definisi arsitektur model CNN, konfigurasi callbacks, mulai training |
-| SEL 4 | Evaluasi model, plot grafik akurasi & loss, confusion matrix |
-| SEL 5 | Konversi model terbaik → TFLite FP16 untuk server |
-| SEL 6 | Verifikasi prediksi dengan gambar sampel dari dataset |
-
-**Menghasilkan file:**
-- `best_model.h5` → Model terbaik (berdasarkan val_accuracy tertinggi selama training)
-- `model_final.h5` → Model di epoch terakhir (backup saja)
-- `model_fp16.tflite` → Model yang siap dipakai di server
-
----
-
-### 🔷 `convert_to_tflite.py` — Konversi Model H5 → TFLite
-Digunakan setelah training selesai untuk mengecilkan model agar lebih ringan di server.
-
-**Dua opsi konversi:**
-
-| Opsi | Ukuran | Akurasi | Rekomendasi |
-|---|---|---|---|
-| FP16 (Float 16-bit) | ~29 MB | ≈ sama dengan H5 original | ✅ **Ini yang dipakai** |
-| INT8 (Integer 8-bit) | ~15 MB | Sedikit lebih rendah | Alternatif jika RAM server kurang |
-
----
-
-### 🔷 `start.sh` — Skrip Menghidupkan Server
-Dijalankan otomatis oleh Render.com saat server dinyalakan.
+## 🚀 Cara Menjalankan Server Flask Secara Lokal
 
 ```bash
-export FLASK_MODE=online        # Beritahu Flask bahwa ini mode produksi
-gunicorn api_flask:app          # Jalankan via Gunicorn (server produksi, lebih stabil dari Flask dev server)
-  --workers 1                   # 1 proses pekerja (sesuai batas Render.com free)
-  --threads 1                   # 1 thread per pekerja
-  --bind 0.0.0.0:$PORT          # Dengarkan di port yang diberikan Render
-  --timeout 120                 # Beri waktu 120 detik per request (model AI butuh waktu)
-```
-
----
-
-## 🧠 Penjelasan File Model
-
-| File | Ukuran | Sumber | Dipakai untuk |
-|---|---|---|---|
-| `best_model.h5` | ~118 MB | Hasil `train_colab.py` (epoch dengan val_accuracy tertinggi) | Sumber konversi ke TFLite. Backup jika TFLite tidak tersedia |
-| `model_final.h5` | ~118 MB | Hasil `train_colab.py` (epoch terakhir) | Backup saja. Tidak selalu lebih baik dari best_model |
-| `model_fp16.tflite` | ~29 MB | Hasil konversi `best_model.h5` via `convert_to_tflite.py` | **⭐ DIPAKAI di server production** |
-
-> **Kenapa pakai TFLite bukan H5 langsung?**
-> Model H5 (Keras) berukuran ~118 MB dan butuh RAM lebih besar. Server Render.com free hanya punya RAM 512 MB.
-> TFLite FP16 hanya ~29 MB dan lebih efisien, akurasi hampir sama persis dengan versi H5-nya.
-
----
-
-## 🏗️ Arsitektur Model CNN
-
-Model dibangun menggunakan **TensorFlow / Keras** dengan arsitektur sebagai berikut:
-
-```
-Input: Gambar RGB 128 × 128 piksel
-│
-├── Block 1: Conv2D(32) → BatchNorm → MaxPooling(2×2)
-├── Block 2: Conv2D(64) → BatchNorm → MaxPooling(2×2) → Dropout(0.3)
-├── Block 3: Conv2D(128) → BatchNorm → MaxPooling(2×2) → Dropout(0.4)
-├── Block 4: Conv2D(256) → BatchNorm → MaxPooling(2×2) → Dropout(0.4)
-│
-├── Flatten
-├── Dense(512, ReLU) → BatchNorm → Dropout(0.5)
-└── Dense(5, Softmax)  ← Output: 5 kelas penyakit
-```
-
-**5 Kelas Output:**
-| Index | Nama di Model | Keterangan |
-|---|---|---|
-| 0 | `Healthy` | Daun sehat, tidak ada penyakit |
-| 1 | `Bacterialblight` | Hawar bakteri |
-| 2 | `Blast` | Penyakit blas / busuk leher |
-| 3 | `Brownspot` | Bercak cokelat |
-| 4 | `Tungro` | Virus tungro |
-
----
-
-## 📊 Konfigurasi Training
-
-| Parameter | Nilai | Keterangan |
-|---|---|---|
-| Ukuran gambar | 128 × 128 piksel | Input ke model CNN |
-| Batch size | 15 | Jumlah gambar per iterasi |
-| Max epoch | 100 | Batas maksimal, biasanya berhenti lebih awal |
-| EarlyStopping | patience=15 | Berhenti jika 15 epoch berturut-turut tidak membaik |
-| ReduceLROnPlateau | patience=5, factor=0.5 | Turunkan learning rate jika stagnan 5 epoch |
-| Split data | 70% / 10% / 20% | Training / Validasi / Testing |
-
----
-
-## 🛠️ Cara Menjalankan Lokal (Testing)
-
-### Prasyarat
-- Python 3.10+
-- Library sesuai `requirements.txt`
-
-### Langkah
-```bash
-# 1. Install semua library yang dibutuhkan
+# 1. Pastikan Python 3.10+ sudah terinstall
+# 2. Install dependensi
 pip install -r requirements.txt
 
-# 2. Jalankan server Flask dalam mode lokal (Windows)
-set FLASK_MODE=local
+# 3. Set mode ke local agar debug mode aktif
+set FLASK_MODE=local      # Windows CMD
+$env:FLASK_MODE="local"   # Windows PowerShell
+export FLASK_MODE=local   # Linux/Mac
+
+# 4. Jalankan server
 python api_flask.py
 
 # Server berjalan di: http://127.0.0.1:5000
-```
-
-### Test Endpoint
-```bash
-# Cek server hidup
-curl http://127.0.0.1:5000/health
-
-# Test prediksi gambar
-curl -X POST -F "image=@/path/ke/gambar.jpg" http://127.0.0.1:5000/predict
+# Cek status: http://127.0.0.1:5000/health
 ```
 
 ---
 
-## 🌐 Alur Training → Deploy (Ringkasan)
+## ☁️ Deployment di Render.com
+
+Server Flask di-deploy di **Render.com** (free tier) sebagai Web Service Python.
+
+- **URL Produksi** : `https://app-deteksi.onrender.com`
+- **Health Check** : `https://app-deteksi.onrender.com/health`
+- **Predict Endpoint**: `https://app-deteksi.onrender.com/predict`
+- **Start Command** : `sh start.sh` (menjalankan Gunicorn)
+
+> ⚠️ **Catatan Free Tier**: Server Render.com gratis akan "tidur" (spin down) setelah
+> 15 menit tidak ada request. Request pertama setelah tidur butuh waktu **30-60 detik**
+> untuk "bangun" kembali. Gunakan tombol **"Tes Koneksi"** di aplikasi untuk membangunkan
+> server sebelum melakukan deteksi.
+
+---
+
+## 🔄 Alur Kerja Lengkap: Dari Training hingga Produksi
 
 ```
-1. Jalankan train_colab.py di Google Colab
-         ↓
-2. Download file best_model.h5 dari Colab
-         ↓
-3. Jalankan convert_to_tflite.py → hasilkan model_fp16.tflite
-         ↓
-4. Upload model_fp16.tflite ke GitHub repo app-deteksi_ml
-         ↓
-5. Render.com otomatis rebuild dan deploy ulang
-         ↓
-6. API siap menerima gambar dari aplikasi PHP (app-deteksi)
+[Google Colab]
+      │
+      ├── train_colab.py (Sel 1-3)
+      │   Download dataset Kaggle → Split 70/10/20% → Training CNN
+      │   Output: model/best_model.h5
+      │
+      ├── train_colab.py (Sel 4)
+      │   Evaluasi: Accuracy, Precision, Recall, F1, Confusion Matrix
+      │
+      └── train_colab.py (Sel 5) ATAU convert_to_tflite.py
+          Konversi H5 → TFLite FP16
+          Output: model/model_fp16.tflite
+
+[Download & Upload ke GitHub]
+      model/model_fp16.tflite → push ke repo
+
+[Render.com — Auto Deploy]
+      start.sh → gunicorn api_flask:app
+      api_flask.py membaca model/model_fp16.tflite
+
+[Aplikasi PHP — app-deteksi]
+      function_deteksi.php → cURL POST ke /predict
+      → Hasil JSON ditampilkan di mulai_deteksi.php
 ```
 
 ---
 
-## 📝 Catatan
+## 📊 Spesifikasi Model
 
-- Dibuat untuk keperluan **Tugas Akhir / Skripsi**
-- Training dilakukan di Google Colab (GPU T4)
-- Server production: Render.com (free tier)
-- Timeout server diset 120 detik untuk mengakomodasi waktu inferensi model
+| Parameter | Nilai |
+|-----------|-------|
+| Arsitektur | CNN (Custom, 4 blok konvolusi) |
+| Input | 128 × 128 piksel, 3 channel (RGB) |
+| Output | 5 kelas (Softmax) |
+| Batch Size | 15 |
+| Optimizer | Adam (lr=0.001) |
+| Loss | Categorical Crossentropy |
+| Augmentasi | Rotasi, geser, zoom, flip, brightness |
+| Early Stopping | patience=15 (monitor val_loss) |
+| Format Produksi | TFLite FP16 (~17 MB) |
+| Format Backup | Keras H5 (~100 MB) |
+
+---
+
+## ⚙️ Konfigurasi Penting
+
+### Di `api_flask.py`
+```python
+MODE = os.getenv("FLASK_MODE", "online")  # "local" untuk testing
+MODEL_DIR = os.path.join(BASE_DIR, "model")  # Folder model
+TFLITE_MODEL_PATH = os.path.join(MODEL_DIR, "model_fp16.tflite")  # Path model utama
+IMG_SIZE = (128, 128)  # Ukuran input — jangan diubah!
+CLASS_NAMES = ["Healthy", "Bacterialblight", "Blast", "Brownspot", "Tungro"]  # Urutan kelas — jangan diubah!
+```
+
+### Di `train_colab.py`
+```python
+IMG_SIZE   = (128, 128)  # Harus sama dengan api_flask.py
+BATCH_SIZE = 15
+EPOCHS     = 100
+CLASS_NAMES = ["Healthy", "Bacterialblight", "Blast", "Brownspot", "Tungro"]  # Harus sama!
+```
+
+> ⚠️ **KRITIKAL**: `CLASS_NAMES` dan `IMG_SIZE` di `api_flask.py` dan `train_colab.py`
+> **HARUS PERSIS SAMA**. Jika berbeda, prediksi akan salah kelas.
+
+---
+
+## 📦 Dependencies (`requirements.txt`)
+
+```
+flask
+tensorflow
+opencv-python-headless
+numpy
+gunicorn
+```

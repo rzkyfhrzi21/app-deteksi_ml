@@ -6,17 +6,29 @@
 #
 # Ibarat "dokter otomatis" — foto daun padi dikirim ke sini,
 # lalu model CNN memeriksa dan memberikan diagnosis penyakitnya.
+# Pengguna tidak langsung berinteraksi dengan file ini.
+# Yang berinteraksi adalah aplikasi PHP (melalui cURL).
 #
-# ENDPOINT:
-#   GET  /health  → Cek apakah server hidup
-#   POST /predict → Kirim gambar, terima hasil prediksi JSON
+# ENDPOINT YANG TERSEDIA:
+#   GET  /health  → Cek apakah server masih hidup (dipakai ping_render.php)
+#   POST /predict → Kirimi gambar daun padi, terima hasil prediksi JSON
 #
-# ALUR KERJA:
-# (1) Server dinyalakan → model TFLite dimuat ke memori
-# (2) Aplikasi PHP mengirim gambar via POST ke /predict
-# (3) Gambar dipreproses (resize, normalize)
-# (4) Model memprediksi jenis penyakit
-# (5) Hasil dikembalikan sebagai JSON
+# ALUR KERJA KESELURUHAN:
+# (1) Server dinyalakan → file model TFLite dibaca dan dimuat ke RAM
+# (2) Aplikasi PHP (function_deteksi.php) mengirim gambar via POST ke /predict
+# (3) Gambar dipreproses: resize 128x128, ubah warna BGR→RGB, normalisasi 0-1
+# (4) Model CNN "memeriksa" gambar dan mengeluarkan 5 angka probabilitas
+# (5) Angka tertinggi = penyakit yang diprediksi, dikembalikan sebagai JSON
+#
+# STRUKTUR FOLDER:
+#   app-deteksi_ml/
+#   ├── api_flask.py          ← file ini (server API)
+#   ├── model/
+#   │   ├── model_fp16.tflite ← model UTAMA yang dipakai (lebih ringan, ~17MB)
+#   │   ├── best_model.h5     ← model Keras asli (backup, ~100MB)
+#   │   └── model_final.h5   ← model Keras epoch terakhir (backup)
+#   ├── convert_to_tflite.py  ← script konversi H5 → TFLite
+#   └── train_colab.py        ← script training di Google Colab
 # ============================================================
 import os
 
@@ -49,16 +61,26 @@ import cv2
 # KONFIGURASI DASAR
 # ==========================
 
-# Path folder tempat file api_flask.py ini berada (root repo)
+# Path folder tempat file api_flask.py ini berada (root dari repo app-deteksi_ml)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Path ke model Keras H5 — dipakai sebagai FALLBACK jika TFLite tidak ada
-# Ukuran ~118 MB, butuh RAM lebih besar
-MODEL_PATH = os.path.join(BASE_DIR, "model.h5")
+# ===========================================================================
+# PATH FILE MODEL
+# Semua file model disimpan di subfolder model/ agar lebih rapi.
+# Jika Anda memindahkan folder model, cukup ubah MODEL_DIR saja di sini.
+# ===========================================================================
 
-# Path ke model TFLite FP16 — UTAMA yang dipakai di server production
-# Ukuran ~29 MB, hasil konversi dari best_model.h5, akurasi hampir sama
-TFLITE_MODEL_PATH = os.path.join(BASE_DIR, "model_fp16.tflite")
+# Folder tempat semua file model disimpan
+MODEL_DIR = os.path.join(BASE_DIR, "model")
+
+# Path ke model TFLite FP16 — INI YANG DIPAKAI UTAMA di server production
+# Ukuran ~17 MB, hasil konversi dari best_model.h5, akurasi hampir sama
+# Lebih ringan dari H5 karena bilangan desimal dikompres dari 32-bit → 16-bit
+TFLITE_MODEL_PATH = os.path.join(MODEL_DIR, "model_fp16.tflite")
+
+# Path ke model Keras H5 — dipakai sebagai CADANGAN jika TFLite tidak ada
+# Ukuran ~100 MB, butuh RAM jauh lebih besar, lebih lambat dimuat
+MODEL_PATH = os.path.join(MODEL_DIR, "best_model.h5")
 
 # Ukuran input gambar — HARUS sama persis dengan saat training model
 # Semua gambar akan di-resize ke 128x128 piksel sebelum dimasukkan ke model
@@ -78,45 +100,48 @@ CLASS_NAMES = [
 # ==========================
 # DETEKSI MODE MODEL (OTOMATIS)
 # ==========================
-# Sistem cek dulu: apakah file model_fp16.tflite ada di folder ini?
-# Jika ADA  → pakai TFLite (lebih ringan, hemat RAM ~4x, kecepatan hampir sama)
-# Jika TIDAK → fallback otomatis ke model.h5 (Keras, ukuran besar tapi lebih portabel)
+# Sistem otomatis mengecek: apakah file model_fp16.tflite sudah ada di folder model/?
+# Jika ADA  → pakai TFLite (lebih ringan, hemat RAM ~4x, akurasi hampir sama)
+# Jika TIDAK → fallback otomatis ke best_model.h5 (Keras, ukuran besar tapi lebih portabel)
+#
+# Anda tidak perlu mengubah kode ini. Cukup pastikan file .tflite ada di folder model/.
 USE_TFLITE = os.path.exists(TFLITE_MODEL_PATH)
 
 # ==========================
 # LOAD MODEL (SEKALI SAJA SAAT SERVER DINYALAKAN)
 # ==========================
-# Model hanya dimuat SEKALI saat server pertama kali hidup, bukan setiap request.
-# Ini penting untuk efisiensi — bayangkan jika harus load model 29MB setiap ada request!
+# Model hanya dimuat SEKALI saat server pertama kali hidup, bukan setiap ada request masuk.
+# Ini sangat penting untuk efisiensi — bayangkan jika harus membaca file 17MB setiap
+# kali pengguna mengirim foto! Server akan sangat lambat dan boros RAM.
+#
+# Cara kerjanya: saat Gunicorn/Python menjalankan file ini, kode di bawah dieksekusi
+# langsung, dan hasilnya (variabel interpreter/model) disimpan di RAM untuk dipakai
+# berkali-kali oleh fungsi predict().
 
 if USE_TFLITE:
-    print(f"[INFO] Loading TFLite model from: {TFLITE_MODEL_PATH}")
+    print(f"[INFO] Memuat model TFLite dari: {TFLITE_MODEL_PATH}")
 
-    # Inisialisasi interpreter TFLite — ibarat 'menyiapkan mesin prediksi'
+    # Buat interpreter TFLite — ibarat 'menyiapkan mesin prediksi' dan mengalokasikan memorinya
     interpreter = tf.lite.Interpreter(model_path=TFLITE_MODEL_PATH)
-    interpreter.allocate_tensors()  # Alokasikan memori untuk tensor input & output
+    interpreter.allocate_tensors()  # Siapkan slot memori untuk data input dan output model
 
-    # Ambil detail input & output tensor
-    # input_details  → informasi tentang format gambar yang diharapkan model
-    # output_details → informasi tentang format hasil prediksi yang dikeluarkan model
+    # Ambil informasi tentang slot input dan output model:
+    # input_details  → tahu format gambar yang diharapkan model (ukuran, tipe data)
+    # output_details → tahu format hasil yang dikeluarkan model (berapa kelas, tipe data)
     input_details  = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Keras model tidak dipakai saat TFLite aktif
-    model = None
-
-    print("[INFO] TFLite model loaded successfully.")
+    model = None  # Variabel model Keras tidak dipakai saat TFLite aktif
+    print("[INFO] Model TFLite berhasil dimuat!")
 
 else:
-    print(f"[INFO] Loading Keras model from: {MODEL_PATH}")
+    print(f"[INFO] TFLite tidak ditemukan. Memuat model Keras dari: {MODEL_PATH}")
 
-    # Load model Keras (.h5) — lebih besar tapi langsung bisa dipakai
+    # Muat model Keras (.h5) — ukurannya lebih besar (~100MB) tapi cara pakainya lebih mudah
     model = tf.keras.models.load_model(MODEL_PATH)
 
-    # Interpreter TFLite tidak dipakai saat mode Keras aktif
-    interpreter = None
-
-    print("[INFO] Keras model loaded successfully.")
+    interpreter = None  # Variabel interpreter TFLite tidak dipakai saat mode Keras aktif
+    print("[INFO] Model Keras berhasil dimuat!")
 
 # ==========================
 # FUNGSI: PREPROCESS IMAGE
