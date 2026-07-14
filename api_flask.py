@@ -225,8 +225,44 @@ def predict_model(img):
 
 app = Flask(__name__)
 
+# ============================================================
+# KEAMANAN APLIKASI FLASK (Standar OWASP Top 10)
+# ============================================================
+
+# 1. Mencegah Serangan Denial of Service (DoS) (A05: Security Misconfiguration)
+# Membatasi ukuran maksimal file yang boleh diupload sebesar 5 Megabyte.
+# Ibarat 'pintu masuk' yang menolak paket raksasa. Jika ada orang iseng mengirim
+# gambar ukuran 10 GB, server akan langsung menolaknya sebelum masuk memori,
+# sehingga server tidak hang atau kehabisan RAM.
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB
+
+# 2. Mencegah Akses Ilegal (A01: Broken Access Control)
+# Kunci Rahasia API (API Key) ini ibarat 'kata sandi rahasia'.
+# Hanya aplikasi PHP Anda (yang tahu kata sandi ini) yang boleh memakai fungsi deteksi.
+# Orang luar yang mencoba mengakses URL Render Anda akan ditolak.
+API_SECRET_KEY = "SistemPakarDeteksiDaunPadi_2026_Aman"
+
+def check_api_key():
+    """
+    Fungsi satpam: Memeriksa apakah tamu yang datang membawa 'kunci' yang benar.
+    Kunci dikirim melalui header bernama 'X-API-KEY'.
+    """
+    provided_key = request.headers.get('X-API-KEY')
+    if not provided_key or provided_key != API_SECRET_KEY:
+        # Jika kunci salah atau tidak ada, kembalikan error 401 (Akses Ditolak)
+        return jsonify({"error": "Akses Ditolak (Unauthorized). Kunci API salah atau tidak disertakan."}), 401
+    return None # Lanjut jika kunci benar
+
+# Menangani error jika file melebihi 5MB agar merespons dengan JSON (bukan HTML)
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({"error": "Ukuran file terlalu besar. Maksimal 5MB."}), 413
+
 @app.route("/health", methods=["GET"])
 def health():
+    # Periksa kunci keamanan terlebih dahulu
+    auth_error = check_api_key()
+    if auth_error: return auth_error
     """
     ENDPOINT: GET /health — Cek Status Server
 
@@ -282,6 +318,10 @@ def predict():
         }
     }
     """
+    # Periksa kunci keamanan terlebih dahulu
+    auth_error = check_api_key()
+    if auth_error: return auth_error
+
     # (1) Validasi: cek apakah field 'image' ada di request yang dikirim PHP
     if "image" not in request.files:
         return jsonify({"error": "Field 'image' tidak ditemukan."}), 400
