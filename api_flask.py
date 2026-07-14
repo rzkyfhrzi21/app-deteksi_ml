@@ -238,9 +238,9 @@ app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB
 
 # 2. Mencegah Akses Ilegal (A01: Broken Access Control)
 # Kunci Rahasia API (API Key) ini ibarat 'kata sandi rahasia'.
-# Hanya aplikasi PHP Anda (yang tahu kata sandi ini) yang boleh memakai fungsi deteksi.
-# Orang luar yang mencoba mengakses URL Render Anda akan ditolak.
-API_SECRET_KEY = "SistemPakarDeteksiDaunPadi_2026_Aman"
+# Kunci ini TIDAK BOLEH ditulis langsung di kode untuk repositori GitHub Publik!
+# Kita mengambilnya secara dinamis dari pengaturan "Environment Variable" di Render.com.
+API_SECRET_KEY = os.environ.get("API_SECRET_KEY", "KataSandiBaru_Padi_2026_Aman")
 
 def check_api_key():
     """
