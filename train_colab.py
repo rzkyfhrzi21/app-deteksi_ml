@@ -31,15 +31,19 @@ CARA PAKAI:
 """
 
 # ============================================================
-# SEL 1: SETUP KAGGLE & DOWNLOAD DATASET
+# SEL 1: SETUP KAGGLE & PERSIAPAN DATASET
 # ============================================================
-# Dataset diambil dari Kaggle (platform data science publik).
-# Kita membutuhkan 2 dataset berbeda yang kemudian digabungkan:
-#   Dataset 1: 4 kelas penyakit (Bacterialblight, Blast, Brownspot, Tungro)
-#   Dataset 2: 1 kelas sehat (Healthy) — dari dataset yang berbeda
+# Prioritas sumber data:
+#   1. Foto upload manual (hasil dokumentasi lapangan sendiri) — PRIORITAS UTAMA
+#   2. Dataset Kaggle — hanya mengisi KEKURANGAN dari target per kelas
+#
+# Target jumlah data per kelas (sesuai tabel 3.1 skripsi):
+#   Bacterialblight : 1535 | Blast    : 1477 | Brownspot : 1696
+#   Tungro          : 1329 | Healthy  :  360 | TOTAL     : 6397
 # ============================================================
 import os
 import shutil
+import random
 
 # ==============================
 # KREDENSIAL KAGGLE API
@@ -50,67 +54,226 @@ import shutil
 os.environ['KAGGLE_USERNAME'] = "lulukaulani08"
 os.environ['KAGGLE_KEY'] = "KGAT_43cee82e0c48baacc74ea2ebfdb30ba2"
 
-# ----------------------------------------------------------
-# STEP 1: Download 4 kelas penyakit dari dataset utama
-# Sumber  : https://www.kaggle.com/datasets/nirmalsankalana/rice-leaf-disease-image
-# Berisi  : Bacterialblight, Blast, Brownspot, Tungro
-# ----------------------------------------------------------
-os.system("kaggle datasets download -d nirmalsankalana/rice-leaf-disease-image")
-os.system("unzip -q rice-leaf-disease-image.zip -d dataset_sementara")
+# ==============================
+# TARGET JUMLAH DATA PER KELAS (Tabel 3.1 Skripsi)
+# Kunci = nama folder kelas, Nilai = total data yang dibutuhkan
+# ==============================
+TARGET_PER_KELAS = {
+    "Bacterialblight": 1535,
+    "Blast":           1477,
+    "Brownspot":       1696,
+    "Tungro":          1329,
+    "Healthy":          360,
+}
+CLASSES      = list(TARGET_PER_KELAS.keys())
+UPLOAD_DIR   = "uploads"       # Folder utama tempat Anda menaruh foto manual
+DATASET_DEST = "dataset_padi"  # Folder dataset akhir yang akan digunakan training
+EKSTENSI_VALID = ('.jpg', '.jpeg', '.png')
 
-# Pindahkan semua isi dataset ke folder dataset_padi/ lalu hapus sisa file
-os.makedirs("dataset_padi", exist_ok=True)
-os.system("mv dataset_sementara/* dataset_padi/")
-os.system("rm -rf dataset_sementara rice-leaf-disease-image.zip")
+# ============================================================
+# STEP 1: BUAT FOLDER UPLOAD & TAMPILKAN INSTRUKSI
+# ============================================================
+# Foto dari upload manual DIPRIORITASKAN terlebih dahulu.
+# Kaggle hanya akan digunakan untuk mengisi KEKURANGAN dari target.
+# ============================================================
+for kelas in CLASSES:
+    os.makedirs(os.path.join(UPLOAD_DIR, kelas), exist_ok=True)
+    os.makedirs(os.path.join(DATASET_DEST, kelas), exist_ok=True)
 
-# ----------------------------------------------------------
-# STEP 2: Download kelas Healthy
-# Source: https://www.kaggle.com/datasets/dedeikhsandwisaputra/rice-leafs-disease-dataset
-# Ambil hanya dari folder TRAIN (bukan validation)
-# ----------------------------------------------------------
-os.system("kaggle datasets download -d dedeikhsandwisaputra/rice-leafs-disease-dataset")
-os.system("unzip -q rice-leafs-disease-dataset.zip -d dataset_healthy_src")
+print("\n" + "="*60)
+print("  📸  SILAKAN UPLOAD FOTO DOKUMENTASI ANDA SEKARANG  📸")
+print("="*60)
+print("""
+  Foto Anda akan DIPRIORITASKAN sebagai data utama.
+  Kaggle hanya mengisi sisa kekurangan dari target.
 
-# Cari folder train/healthy secara otomatis (case-insensitive)
-healthy_train_src = None
-for root, dirs, files in os.walk("dataset_healthy_src"):
-    for d in dirs:
-        full_path = os.path.join(root, d)
-        # Hanya ambil dari path yang mengandung 'train', bukan 'validation'
-        if d.lower() == "healthy" and "train" in root.lower():
-            healthy_train_src = full_path
-            break
-    if healthy_train_src:
-        break
+  Langkah-langkah:
+  1. Klik ikon 📁 (Files) di panel KIRI Colab
+  2. Buka folder  uploads/<nama_kelas>/  sesuai jenis foto:
+       📁 uploads/Healthy/          → daun sehat           (target total: 360)
+       📁 uploads/Bacterialblight/  → hawar bakteri        (target total: 1535)
+       📁 uploads/Blast/            → blas / busuk leher   (target total: 1477)
+       📁 uploads/Brownspot/        → bercak cokelat       (target total: 1696)
+       📁 uploads/Tungro/           → tungro (menguning)   (target total: 1329)
+  3. Klik kanan pada folder → "Upload" → pilih foto (JPG/PNG)
+  4. Tunggu hingga semua foto selesai terupload
+  5. Tekan ENTER di bawah untuk melanjutkan
+""")
+print("="*60)
+input("  ▶  Tekan ENTER setelah selesai upload (atau ENTER langsung jika tidak ada)...")
+print()
 
-if healthy_train_src:
-    print(f"[INFO] Folder train/healthy ditemukan: {healthy_train_src}")
-    os.system(f"mv '{healthy_train_src}' dataset_padi/Healthy")
-    print("[OK] Folder Healthy berhasil dipindahkan ke dataset_padi/Healthy")
+# ============================================================
+# STEP 2: HITUNG FOTO UPLOAD & SALIN KE dataset_padi/
+# ============================================================
+# Foto upload manual disalin terlebih dahulu ke dataset_padi/<kelas>/.
+# Sistem mencatat jumlah per kelas untuk menentukan sisa kebutuhan Kaggle.
+# ============================================================
+print("[INFO] Memproses foto upload...")
+
+jumlah_upload = {}   # Menyimpan jumlah foto upload per kelas
+for kelas in CLASSES:
+    src_folder = os.path.join(UPLOAD_DIR, kelas)
+    dst_folder = os.path.join(DATASET_DEST, kelas)
+
+    foto_list = sorted([
+        f for f in os.listdir(src_folder)
+        if f.lower().endswith(EKSTENSI_VALID)
+    ])
+
+    copied = 0
+    for fname in foto_list:
+        src_path = os.path.join(src_folder, fname)
+        dst_path = os.path.join(dst_folder, fname)
+        # Skip jika sudah ada — hindari tumpuk duplikat saat re-run
+        if os.path.exists(dst_path):
+            continue
+        shutil.copy2(src_path, dst_path)
+        copied += 1
+
+    jumlah_upload[kelas] = len(foto_list)
+
+# ============================================================
+# STEP 3: DOWNLOAD DATASET KAGGLE (HANYA UNTUK MENGISI KEKURANGAN)
+# ============================================================
+# Hitung sisa dari isi dataset_padi/ yang SUDAH ADA (bukan hanya upload).
+# Re-run aman: jika target sudah terpenuhi → skip download & salin.
+# ============================================================
+
+def _hitung_gambar(folder):
+    if not os.path.isdir(folder):
+        return 0
+    return len([f for f in os.listdir(folder) if f.lower().endswith(EKSTENSI_VALID)])
+
+jumlah_existing = {
+    k: _hitung_gambar(os.path.join(DATASET_DEST, k)) for k in CLASSES
+}
+kelas_butuh_kaggle = {k: max(0, TARGET_PER_KELAS[k] - jumlah_existing[k]) for k in CLASSES}
+total_butuh        = sum(kelas_butuh_kaggle.values())
+
+if total_butuh == 0:
+    print("[INFO] Dataset sudah lengkap — skip download Kaggle.")
 else:
-    # Fallback: tampilkan semua folder untuk debug manual
-    print("[ERROR] Folder train/healthy tidak ditemukan. Daftar semua folder:")
-    for root, dirs, files in os.walk("dataset_healthy_src"):
-        for d in dirs:
-            print(f"  {os.path.join(root, d)}")
+    print("[INFO] Mengunduh dataset Kaggle...")
 
-# Bersihkan file sementara
-os.system("rm -rf dataset_healthy_src rice-leafs-disease-dataset.zip")
+    # ----------------------------------------------------------
+    # STEP 3a: Download 4 kelas penyakit dari dataset utama
+    # Sumber: https://www.kaggle.com/datasets/nirmalsankalana/rice-leaf-disease-image
+    # Berisi: Bacterialblight, Blast, Brownspot, Tungro
+    # ----------------------------------------------------------
+    butuh_penyakit = sum(kelas_butuh_kaggle[k] for k in ["Bacterialblight", "Blast", "Brownspot", "Tungro"])
+    if butuh_penyakit > 0:
+        zip_penyakit = "rice-leaf-disease-image.zip"
+        if not os.path.isdir("dataset_kaggle_src"):
+            if not os.path.isfile(zip_penyakit):
+                os.system("kaggle datasets download -d nirmalsankalana/rice-leaf-disease-image")
+            os.system(f"unzip -q {zip_penyakit} -d dataset_kaggle_src")
+
+        # Salin dari Kaggle hanya sebanyak kekurangan per kelas
+        for kelas in ["Bacterialblight", "Blast", "Brownspot", "Tungro"]:
+            sisa = kelas_butuh_kaggle[kelas]
+            if sisa == 0:
+                continue
+
+            # Cari folder kelas di dalam hasil ekstrak Kaggle (case-insensitive)
+            src_kelas = None
+            for root, dirs, _ in os.walk("dataset_kaggle_src"):
+                for d in dirs:
+                    if d.lower() == kelas.lower():
+                        src_kelas = os.path.join(root, d)
+                        break
+                if src_kelas:
+                    break
+
+            if not src_kelas:
+                continue
+
+            dst_folder = os.path.join(DATASET_DEST, kelas)
+            semua_foto = sorted([
+                f for f in os.listdir(src_kelas)
+                if f.lower().endswith(EKSTENSI_VALID)
+            ])
+            random.seed(42)
+            random.shuffle(semua_foto)
+
+            copied = 0
+            for fname in semua_foto:
+                if copied >= sisa:
+                    break
+                src_path = os.path.join(src_kelas, fname)
+                dst_path = os.path.join(dst_folder, fname)
+                # Skip jika sudah ada — jangan buat _k duplikat
+                if os.path.exists(dst_path):
+                    continue
+                shutil.copy2(src_path, dst_path)
+                copied += 1
+
+        os.system("rm -rf dataset_kaggle_src rice-leaf-disease-image.zip")
+
+    # ----------------------------------------------------------
+    # STEP 3b: Download kelas Healthy dari dataset kedua
+    # Source: https://www.kaggle.com/datasets/dedeikhsandwisaputra/rice-leafs-disease-dataset
+    # Ambil hanya dari folder TRAIN (bukan validation)
+    # ----------------------------------------------------------
+    sisa_healthy = kelas_butuh_kaggle["Healthy"]
+    if sisa_healthy == 0:
+        pass  # sudah terpenuhi
+    else:
+        zip_healthy = "rice-leafs-disease-dataset.zip"
+        if not os.path.isdir("dataset_healthy_src"):
+            if not os.path.isfile(zip_healthy):
+                os.system("kaggle datasets download -d dedeikhsandwisaputra/rice-leafs-disease-dataset")
+            os.system(f"unzip -q {zip_healthy} -d dataset_healthy_src")
+
+        # Cari folder train/healthy secara otomatis (case-insensitive)
+        healthy_train_src = None
+        for root, dirs, files in os.walk("dataset_healthy_src"):
+            for d in dirs:
+                full_path = os.path.join(root, d)
+                if d.lower() == "healthy" and "train" in root.lower():
+                    healthy_train_src = full_path
+                    break
+            if healthy_train_src:
+                break
+
+        if healthy_train_src:
+            dst_folder = os.path.join(DATASET_DEST, "Healthy")
+            semua_foto = sorted([
+                f for f in os.listdir(healthy_train_src)
+                if f.lower().endswith(EKSTENSI_VALID)
+            ])
+            random.seed(42)
+            random.shuffle(semua_foto)
+
+            copied = 0
+            for fname in semua_foto:
+                if copied >= sisa_healthy:
+                    break
+                src_path = os.path.join(healthy_train_src, fname)
+                dst_path = os.path.join(dst_folder, fname)
+                if os.path.exists(dst_path):
+                    continue
+                shutil.copy2(src_path, dst_path)
+                copied += 1
+        else:
+            print("[ERROR] Folder Healthy dari Kaggle tidak ditemukan.")
+
+        os.system("rm -rf dataset_healthy_src rice-leafs-disease-dataset.zip")
 
 # ----------------------------------------------------------
-# STEP 3: Verifikasi hasil akhir — pastikan semua kelas lengkap
+# STEP 4: Verifikasi hasil akhir — pastikan semua kelas lengkap
 # Sistem akan menghitung jumlah gambar per kelas dan menampilkannya
 # ----------------------------------------------------------
 print("\n===== Dataset siap di-training =====")
 total_all = 0
-for kelas in sorted(os.listdir("dataset_padi")):
-    path_kelas = f"dataset_padi/{kelas}"
-    if os.path.isdir(path_kelas):
-        jumlah = len([f for f in os.listdir(path_kelas)
-                      if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
-        total_all += jumlah
-        print(f"  {kelas:20s}: {jumlah:>5} gambar")
+for kelas in CLASSES:
+    path_kelas = os.path.join(DATASET_DEST, kelas)
+    jumlah = len([f for f in os.listdir(path_kelas)
+                  if f.lower().endswith(EKSTENSI_VALID)]) if os.path.isdir(path_kelas) else 0
+    total_all += jumlah
+    print(f"  {kelas:20s}: {jumlah:>5} gambar")
 print(f"  {'TOTAL':20s}: {total_all:>5} gambar")
+print("[OK] Dataset selesai dipersiapkan!")
 
 
 # ============================================================
